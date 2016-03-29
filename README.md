@@ -1,10 +1,8 @@
 # wikipedia.org-xmldump-importer
 
-Wikipedia.org XML Dump Importer is a script to import the standard Wikipedia XML dump into a simple MySQL/MariaDB database useful as a local cache for searching and manipulating Wikipedia articles. The database structure is designed for ease of use, and is not mediawiki-compatible.
+Wikipedia.org XML Dump Importer is a script to import the standard Wikipedia XML dump into a simple MySQL/MariaDB database or MongoDB datastore useful as a local cache for searching and manipulating Wikipedia articles. The data storage structure is designed for ease of use, and is not mediawiki-compatible.
 
-This is an improved version of https://github.com/kodekrash/wikipedia.org-xmldump-mysql
-
-https://github.com/kodekrash/wikipedia.org-xmldump-mongodb will be merged into this tool soon.
+This is an improved/combined version of https://github.com/kodekrash/wikipedia.org-xmldump-mysql and https://github.com/kodekrash/wikipedia.org-xmldump-mongodb.
 
 Dataset Source
 --------------
@@ -19,6 +17,7 @@ Environment
 * GNU/Linux
 * PHP 5.4 + (with simplexml, bzip2, mysqli)
 * MySQL 5.4 + (optional fulltext index option)
+* MongoDB 3.x
 
 Notes
 -----
@@ -32,7 +31,7 @@ Usage
 -----
 
 	Options:
-		--driver   Storage driver (mysql, dummy)
+		--driver   Storage driver (mysql, mongodb, dummy)
 		--host     Storage server hostname/ip (default=localhost)
 		--port     Storage server port (if not standard)
 		--user     Storage server username (if required)
@@ -65,8 +64,17 @@ Howto
 
 			./import.php --driver=mysql --indexes | mysql my_database_name
 
+* For MongoDB
+
+	* Install the (new) MongoDB support for PHP:
+	
+			composer install
+
+	* Run the script, specifying database config and import file via command line options:
+	
+			./import.php --import --driver=mongodb --host=localhost --user=dbuser --pass=mysecret --name=my_database_name --file=enwiki-20160204-pages-articles.xml.bz2
+
 License
 -------
 
 This project is BSD (2 clause) licensed.
-

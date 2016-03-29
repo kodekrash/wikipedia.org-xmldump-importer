@@ -21,7 +21,7 @@ class util {
 
 	public static function usage() {
 		echo 'Importer for Wikipedia.org XML Dumps', PHP_EOL, 'Options:', PHP_EOL;
-		echo chr(9) . '--driver   Storage driver (mysql, dummy)', PHP_EOL;
+		echo chr(9) . '--driver   Storage driver (mysql, mongodb, dummy)', PHP_EOL;
 		echo chr(9) . '--host     Storage server hostname/ip (default=localhost)', PHP_EOL;
 		echo chr(9) . '--port     Storage server port (if not standard)', PHP_EOL;
 		echo chr(9) . '--user     Storage server username (if required)', PHP_EOL;
@@ -56,12 +56,14 @@ class util {
 	}
 
 	public static function requirements( $cfg ) {
-		if( !in_array( $cfg['driver'], [ 'mysql', 'dummy' ] ) ) {
-			self::abort( 'You must specify a data driver (mysql or dummy).' );
+		if( !in_array( $cfg['driver'], [ 'mysql', 'mongodb', 'dummy' ] ) ) {
+			self::abort( 'You must specify a data driver (mysql, mongodb or dummy).' );
 		}
 		$r = [ 'bzip' => 'bzopen', 'simplexml' => 'simplexml_load_string' ];
 		if( $cfg['driver'] == 'mysql' ) {
 			$r['mysql'] = 'mysqli_connect';
+		} else if( $cfg['driver'] == 'mongodb' ) {
+			$r['mongodb'] = 'MongoDB\BSON\fromJSON';
 		}
 		foreach( $r as $k => $v ) {
 			if( !function_exists( $v ) ) {
@@ -73,11 +75,10 @@ class util {
 		}
 	}
 
-	public static function output( $runtime, $speed, $pages, $revisions, $title ) {
+	public static function output( $runtime, $speed, $pages, $title ) {
 		$s = str_pad( $runtime, 12, ' ', STR_PAD_LEFT ) . ' | ';
 		$s .= str_pad( $speed, 8, ' ', STR_PAD_LEFT ) . ' /s | ';
 		$s .= str_pad( $pages, 12, ' ', STR_PAD_LEFT ) . ' | ';
-		$s .= str_pad( $revisions, 12, ' ', STR_PAD_LEFT ) . ' | ';
 		$s .= $title . PHP_EOL;
 		echo $s;
 	}
@@ -88,21 +89,21 @@ class driver_dummy {
 
 	private $v = false;
 
-	public function add_namespace( $id, $name ) {
+	protected function add_namespace( $id, $name ) {
 		if( $this->v ) {
 			echo 'Namespace', PHP_EOL, chr(9), 'id', chr(9), $id, PHP_EOL, chr(9), 'name', chr(9), $name, PHP_EOL;
 		}
 		return true;
 	}
 
-	public function add_contributor( $id, $name ) {
+	protected function add_contributor( $id, $name ) {
 		if( $this->v ) {
 			echo 'Contributor', PHP_EOL, chr(9), 'id', chr(9), $id, PHP_EOL, chr(9), 'name', chr(9), $name, PHP_EOL;
 		}
 		return true;
 	}
 
-	public function add_page( $id, $ns, $redirect, $title ) {
+	protected function add_page( $id, $ns, $redirect, $title ) {
 		if( $this->v ) {
 			echo 'Page', PHP_EOL, chr(9), 'id', chr(9), $id, PHP_EOL, chr(9), 'ns', chr(9), $ns, PHP_EOL;
 			echo chr(9), 'redirect', chr(9), $redirect, PHP_EOL, chr(9), 'title', chr(9), $redirect, PHP_EOL;
@@ -110,7 +111,7 @@ class driver_dummy {
 		return true;
 	}
 
-	public function add_revision( $id, $page, $contrib, $parent, $dt, $length, $minor, $comment, $sha1, $body ) {
+	protected function add_revision( $id, $page, $contrib, $parent, $dt, $length, $minor, $comment, $sha1, $body ) {
 		if( $this->v ) {
 			echo 'Revision', PHP_EOL, chr(9), 'id', chr(9), $id, PHP_EOL, chr(9), 'page', chr(9), $page, PHP_EOL;
 			echo chr(9), 'contrib', chr(9), $contrib, PHP_EOL, chr(9), 'parent', chr(9), $parent, PHP_EOL;
@@ -119,6 +120,28 @@ class driver_dummy {
 			echo chr(9), 'sha1', chr(9), $sha1, PHP_EOL, chr(9), 'body', chr(9), str_replace( [ chr(10), chr(13) ], ' ', substr( $body, 0, 100 ) ), PHP_EOL;
 		}
 		return true;
+	}
+
+	public function save_namespace( $id, $name ) {
+		return $this->add_namespace( $id, $name );
+	}
+
+	public function save_page( $data ) {
+		if( isset( $data['page'] ) ) {
+			$p = $this->add_page( $data['page']['id'], $data['page']['ns'], $data['page']['redirect'], $data['page']['title'] );
+			if( $p ) {
+				if( isset( $data['contrib'] ) ) {
+					$c = $this->add_contributor( $data['contrib']['id'], $data['contrib']['name'] );
+				}
+				if( isset( $data['revision'] ) ) {
+					$r = $this->add_revision( $data['revision']['id'], $data['page']['id'], $data['contrib']['id'], $data['revision']['parent'],
+											  gmdate( 'Y-m-d H:i:s', $data['revision']['timestamp'] ), $data['revision']['length'], $data['revision']['isminor'],
+											  $data['revision']['comment'], $data['revision']['hash'], $data['revision']['text'] );
+					return $r;
+				}
+			}
+		}
+		return false;
 	}
 
 }
@@ -138,7 +161,7 @@ class driver_mysql {
 		return "'" . $this->c->real_escape_string( (string)$s ) . "'";
 	}
 
-	public function add_namespace( $id, $name ) {
+	protected function add_namespace( $id, $name ) {
 		$s = 'INSERT INTO namespace (id,name) VALUES (%s,%s)';
 		if( $this->c->query( sprintf( $s, $this->q( $id ), $this->q( $name ) ) ) ) {
 			return true;
@@ -147,7 +170,7 @@ class driver_mysql {
 		}
 	}
 
-	public function add_contributor( $id, $name ) {
+	protected function add_contributor( $id, $name ) {
 		$s = 'SELECT COUNT(*) FROM contrib WHERE id=%d';
 		if( $q = $this->c->query( sprintf( $s, (int)$id ) ) ) {
 			if( $r = $q->fetch_array() ) {
@@ -169,7 +192,7 @@ class driver_mysql {
 		}
 	}
 
-	public function add_page( $id, $ns, $redirect, $title ) {
+	protected function add_page( $id, $ns, $redirect, $title ) {
 		$s = 'INSERT INTO page (id,namespace,redirect,title,search) VALUES (%d,%s,%s,%s,%s)';
 		if( $this->c->query( sprintf( $s, $id, $this->q( $ns ), empty( $redirect ) ? 'NULL' : $this->q( $redirect ), $this->q( $title ), $this->q( strtolower( $title ) ) ) ) ) {
 			return true;
@@ -178,7 +201,7 @@ class driver_mysql {
 		}
 	}
 
-	public function add_revision( $id, $page, $contrib, $parent, $dt, $length, $minor, $comment, $sha1, $body ) {
+	protected function add_revision( $id, $page, $contrib, $parent, $dt, $length, $minor, $comment, $sha1, $body ) {
 		$s = 'INSERT INTO revision (id,page,contrib,parent,datetime,length,minor,comment,sha1,body) VALUES (%d,%d,%d,%d,%s,%d,%s,%s,%s,%s)';
 		$p = $this->q( $parent );
 		$d = $this->q( $dt );
@@ -191,6 +214,28 @@ class driver_mysql {
 		} else {
 			util::abort( 'mysql error (' . $this->c->error . ').' );
 		}
+	}
+
+	public function save_namespace( $id, $name ) {
+		return $this->add_namespace( $id, $name );
+	}
+
+	public function save_page( $data ) {
+		if( isset( $data['page'] ) ) {
+			$p = $this->add_page( $data['page']['id'], $data['page']['ns'], $data['page']['redirect'], $data['page']['title'] );
+			if( $p ) {
+				if( isset( $data['contrib'] ) ) {
+					$c = $this->add_contributor( $data['contrib']['id'], $data['contrib']['name'] );
+				}
+				if( isset( $data['revision'] ) ) {
+					$r = $this->add_revision( $data['revision']['id'], $data['page']['id'], $data['contrib']['id'], $data['revision']['parent'],
+											  gmdate( 'Y-m-d H:i:s', $data['revision']['timestamp'] ), $data['revision']['length'], $data['revision']['isminor'],
+											  $data['revision']['comment'], $data['revision']['hash'], $data['revision']['text'] );
+					return $r;
+				}
+			}
+		}
+		return false;
 	}
 
 	public static function schema() {
@@ -216,14 +261,80 @@ class driver_mysql {
 
 }
 
+class driver_mongodb {
+
+	private $c = null;
+	private $d = null;
+
+	public function __construct( $cfg ) {
+		require_once __DIR__ . '/vendor/autoload.php';
+		if( !isset( $cfg['port'] ) ) {
+			$cfg['port'] = 27017;
+		}
+		$this->c = new MongoDB\Client( 'mongodb://' . $cfg['host'] . ':' . $cfg['port'] );
+		if( $this->c ) {
+			$n = $cfg['name'];
+			$this->d = $this->c->$n;
+			$this->d->drop();
+		} else {
+			util::abort( 'Unable to connect to database.' );
+		}
+	}
+
+	public function save_namespace( $id, $name ) {
+		if( $this->d->namespace->count( [ '_id' => $id ] ) == 0 ) {
+			return $this->d->namespace->insertOne( [ '_id' => $id, 'name' => $name ] );
+		}
+		return true;
+	}
+
+	protected function add_contributor( $id, $name ) {
+		$id = (integer)$id;
+		if( $this->d->contributor->count( [ '_id' => $id ] ) == 0 ) {
+			return $this->d->contributor->insertOne( [ '_id' => $id, 'name' => $name ] );
+		}
+		return true;
+	}
+
+	public function save_page( $data ) {
+		if( isset( $data['page'] ) ) {
+			$data['page']['_id'] = (integer)$data['page']['id'];
+			unset( $data['page']['id'] );
+			if( $this->d->page->count( [ '_id' => $data['page']['_id'] ] ) == 0 ) {
+
+				$p = $this->d->page->insertOne( $data['page'] );
+			} else {
+				$p = true;
+			}
+			if( $p ) {
+				if( isset( $data['contrib'] ) ) {
+					$c = $this->add_contributor( $data['contrib']['id'], $data['contrib']['name'] );
+				}
+				if( isset( $data['revision'] ) ) {
+					$data['revision']['_id'] = (integer)$data['revision']['id'];
+					unset( $data['revision']['id'] );
+					if( $this->d->revision->count( [ '_id' => $data['revision']['_id'] ] ) == 0 ) {
+						$data['revision']['page'] = $data['page']['_id'];
+						$data['revision']['parent'] = (integer)$data['revision']['parent'];
+						$data['revision']['timestamp'] = new MongoDB\BSON\Timestamp( 0, $data['revision']['timestamp'] );
+						$data['revision']['contributor'] = (integer)$data['contrib']['id'];
+						$r = $this->d->revision->insertOne( $data['revision'] );
+						return true;
+					}
+				}
+			}
+		}
+		return false;
+	}
+
+}
 
 class reader {
 
 	private $c = null;
 	private $d = null;
 	private $t = null;
-	private $cp = 0;
-	private $cr = 0;
+	private $count = 0;
 
 	public function __construct( $cfg ) {
 		if( is_array( $cfg ) ) {
@@ -235,6 +346,9 @@ class reader {
 		switch( $this->c['driver'] ) {
 			case 'mysql':
 				$this->d = new driver_mysql( $this->c );
+			break;
+			case 'mongodb':
+				$this->d = new driver_mongodb( $this->c );
 			break;
 			case 'dummy':
 				$this->d = new driver_dummy( $this->c );
@@ -260,7 +374,7 @@ class reader {
 	}
 
 	private function speed() {
-		return (int)( $this->cp / ( microtime( true ) - $this->t ) );
+		return (int)( $this->count / ( microtime( true ) - $this->t ) );
 	}
 
 	public function process() {
@@ -296,7 +410,7 @@ class reader {
 							$ni = (int)$y['@attributes']['key'];
 							$nn = array_key_exists( 'name', $y['@attributes'] ) ? (string)$y['@attributes']['name'] : null;
 							if( $this->c['import'] ) {
-								$this->d->add_namespace( $ni, $nn );
+								$this->d->save_namespace( $ni, $nn );
 							}
 						}
 					} else {
@@ -307,47 +421,42 @@ class reader {
 					$x = @simplexml_load_string( $chunk );
 					$chunk = $line = null;
 					if( $x ) {
-						$pi = (string)$x->id;
-						$pt = (string)$x->title;
-						$pn = (string)$x->ns;
-						$pr = null;
+						$data = [];
+						$data['page'] = [
+							'id' => (string)$x->id,
+							'title' => (string)$x->title,
+							'ns' => (string)$x->ns,
+							'redirect' => null
+						];
 						if( $x->redirect ) {
 							$y = (array)$x->redirect;
-							$pr = $y['@attributes']['title'];
+							$data['page']['redirect'] = $y['@attributes']['title'];
 						}
-						$z = false;
-						if( $this->c['import'] ) {
-							$z = $this->d->add_page( $pi, $pn, $pr, $pt );
-						}
-						if( $z ) {
-							$this->cp ++;
-							if( $x->revision ) {
-								$ci = 0;
-								if( $x->revision->contributor ) {
-									$ci = (string)$x->revision->contributor->id;
-									$cu = (string)$x->revision->contributor->username;
-									if( $this->c['import'] ) {
-										$this->d->add_contributor( $ci, $cu );
-									}
-								}
-								$ri = (string)$x->revision->id;
-								$rp = (string)$x->revision->parentid;
-								$rd = gmdate( 'Y-m-d H:i:s', strtotime( (string)$x->revision->timestamp ) );
-								$rm = $x->revision->minor ? true : false;
-								$rc = (string)$x->revision->comment;
-								$rs = (string)$x->revision->sha1;
-								$rt = (string)$x->revision->text;
-								$rl = strlen( $rt );
-								$z = false;
-								if( $this->c['import'] ) {
-									$z = $this->d->add_revision( $ri, $pi, $ci, $rp, $rd, $rl, $rm, $rc, $rs, $rt );
-								}
-								if( $z ) {
-									$this->cr ++;
-								}
+						if( $x->revision ) {
+							$data['revision'] = [
+								'id' => (string)$x->revision->id,
+								'parent' => (string)$x->revision->parentid,
+								'timestamp' => strtotime( (string)$x->revision->timestamp ),
+								'isminor' => $x->revision->minor ? true : false,
+								'comment' => (string)$x->revision->comment,
+								'hash' => (string)$x->revision->sha1,
+								'text' => (string)$x->revision->text
+							];
+							$data['revision']['length'] = strlen( $data['revision']['text'] );
+							if( $x->revision->contributor ) {
+								$data['contrib'] = [
+									'id' => (string)$x->revision->contributor->id,
+									'name' => (string)$x->revision->contributor->username
+								];
 							}
-							util::output( $this->runtime(), $this->speed(), $this->cp, $this->cr, $pt );
 						}
+						if( $this->c['import'] ) {
+							if( $this->d->save_page( $data ) ) {
+								$this->count ++;
+							}
+						}
+						util::output( $this->runtime(), $this->speed(), $this->count, $data['page']['title'] );
+						unset( $data );
 					}
 				}
 				$line = null;
